@@ -67,6 +67,13 @@ function istNeu(job) {
   return tage <= NEU_TAGE;
 }
 
+/** Öffnet die deutsche Fassung der Anzeige. Adressen, die schon eine Sprache tragen, bleiben unverändert. */
+function deutscherLink(url) {
+  const adresse = new URL(url);
+  if (!/^\/[a-z]{2}-[A-Z]{2}\//.test(adresse.pathname)) adresse.pathname = `/de-DE${adresse.pathname}`;
+  return adresse.href;
+}
+
 const ohneKuerzel = (titel) => titel.replace(/\s*\([mfwd]\s*\/[^)]*\)/gi, '').replace(/\s+/g, ' ').trim();
 
 function vergleiche(a, b) {
@@ -93,7 +100,7 @@ function zeile(job, firmaKurz) {
   const link = document.createElement(istWeb ? 'a' : 'span');
   link.textContent = ohneKuerzel(job.titel);
   if (istWeb) {
-    link.href = job.url;
+    link.href = deutscherLink(job.url);
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
   }
