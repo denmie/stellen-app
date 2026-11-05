@@ -1,0 +1,215 @@
+'use strict';
+
+const REPO = 'denmie/stellenradar';
+const NEU_TAGE = 7;
+// Beim Zurückkehren in die App neu laden, aber nicht bei jedem kurzen Wechsel.
+const MINDESTABSTAND_MS = 30_000;
+
+const el = (id) => document.getElementById(id);
+const speicher = {
+  get token() { return localStorage.getItem('token'); },
+  set token(wert) { wert ? localStorage.setItem('token', wert) : localStorage.removeItem('token'); },
+};
+
+let stellen = [];
+let sortierung = JSON.parse(localStorage.getItem('sortierung') ?? 'null') ?? { spalte: 'datum', absteigend: true };
+let zuletztGeladen = 0;
+
+async function holeApi(pfad, accept) {
+  const antwort = await fetch(`https://api.github.com/repos/${REPO}/${pfad}`, {
+    headers: { Authorization: `Bearer ${speicher.token}`, Accept: accept },
+    cache: 'no-store',
+  });
+  if (antwort.status === 401 || antwort.status === 403 || antwort.status === 404) {
+    const fehler = new Error('Zugang abgelehnt');
+    fehler.zugang = true;
+    throw fehler;
+  }
+  if (!antwort.ok) throw new Error(`GitHub antwortet mit HTTP ${antwort.status}`);
+  return antwort.json();
+}
+
+function offeneStellen(state) {
+  const nachId = new Map();
+  for (const suche of Object.values(state.suchen ?? {})) {
+    for (const [id, job] of Object.entries(suche.gesehen ?? {})) {
+      if (job.passt && !job.weg) nachId.set(id, job);
+    }
+  }
+  return [...nachId.values()];
+}
+
+/** Kürzt Firmennamen um Rechtsform und den Namensteil, den alle gemeinsam haben. */
+function kurzeFirmen(jobs) {
+  const namen = [...new Set(jobs.map((job) => job.firma ?? ''))];
+  const woerter = namen.map((name) => name.replace(/\s+(GmbH|AG|SE|KG)$/, '').split(' '));
+  let gemeinsam = 0;
+  if (namen.length > 1) {
+    while (
+      woerter.every((w) => w.length > gemeinsam + 1 && w[gemeinsam] === woerter[0][gemeinsam])
+    ) gemeinsam += 1;
+  }
+  const kurz = new Map(namen.map((name, i) => [name, woerter[i].slice(gemeinsam).join(' ')]));
+  return (firma) => kurz.get(firma ?? '') ?? '';
+}
+
+const datumKurz = (iso) => {
+  if (!iso) return '–';
+  const [jahr, monat, tag] = iso.split('-');
+  return `${tag}.${monat}.${jahr === String(new Date().getFullYear()) ? '' : jahr.slice(2)}`;
+};
+
+function istNeu(job) {
+  if (!job.ausgeschrieben) return false;
+  const [jahr, monat, tag] = job.ausgeschrieben.split('-').map(Number);
+  const heute = new Date();
+  const tage = (new Date(heute.getFullYear(), heute.getMonth(), heute.getDate()) - new Date(jahr, monat - 1, tag)) / 86_400_000;
+  return tage <= NEU_TAGE;
+}
+
+const ohneKuerzel = (titel) => titel.replace(/\s*\([mfwd]\s*\/[^)]*\)/gi, '').replace(/\s+/g, ' ').trim();
+
+function vergleiche(a, b) {
+  const nachTitel = ohneKuerzel(a.titel).localeCompare(ohneKuerzel(b.titel), 'de');
+  if (sortierung.spalte === 'titel') return sortierung.absteigend ? -nachTitel : nachTitel;
+  const nachDatum = (a.ausgeschrieben ?? '').localeCompare(b.ausgeschrieben ?? '');
+  return (sortierung.absteigend ? -nachDatum : nachDatum) || nachTitel;
+}
+
+function zeile(job, firmaKurz) {
+  const tr = document.createElement('tr');
+  const neu = istNeu(job);
+  if (neu) tr.className = 'neu';
+
+  const titel = document.createElement('td');
+  if (neu) {
+    const marke = document.createElement('span');
+    marke.className = 'marke';
+    marke.textContent = 'NEU';
+    titel.append(marke);
+  }
+  // Nur echte Webadressen verlinken, die Daten kommen von außen.
+  const istWeb = /^https:\/\//.test(job.url ?? '');
+  const link = document.createElement(istWeb ? 'a' : 'span');
+  link.textContent = ohneKuerzel(job.titel);
+  if (istWeb) {
+    link.href = job.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+  }
+  titel.append(link);
+  if (job.ort) {
+    const ort = document.createElement('small');
+    ort.textContent = job.ort;
+    titel.append(ort);
+  }
+
+  const firma = document.createElement('td');
+  firma.className = 'firma';
+  firma.textContent = firmaKurz(job.firma);
+
+  const datum = document.createElement('td');
+  datum.className = 'datum';
+  datum.textContent = datumKurz(job.ausgeschrieben);
+
+  tr.append(titel, firma, datum);
+  return tr;
+}
+
+function zeichne() {
+  const firmaKurz = kurzeFirmen(stellen);
+  const sortiert = [...stellen].sort(vergleiche);
+  document.querySelector('#liste tbody').replaceChildren(...sortiert.map((job) => zeile(job, firmaKurz)));
+  for (const th of document.querySelectorAll('th[data-spalte]')) {
+    const aktiv = th.dataset.spalte === sortierung.spalte;
+    th.querySelector('span').textContent = aktiv ? (sortierung.absteigend ? '▼' : '▲') : '';
+    if (aktiv) th.setAttribute('aria-sort', sortierung.absteigend ? 'descending' : 'ascending');
+    else th.removeAttribute('aria-sort');
+  }
+  el('liste').hidden = false;
+  el('fuss').hidden = false;
+  el('zugang').hidden = true;
+}
+
+const zeitpunkt = (iso) =>
+  new Date(iso).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+function statuszeile(geaendert, zusatz = '') {
+  const neu = stellen.filter(istNeu).length;
+  const teile = [`${stellen.length} offen`, `${neu} neu`];
+  if (geaendert) teile.push(`Liste geändert ${zeitpunkt(geaendert)}`);
+  el('status').textContent = teile.join(' · ') + zusatz;
+}
+
+function zeigeZugang(hinweis) {
+  if (hinweis) el('zugang-hinweis').textContent = hinweis;
+  el('zugang').hidden = false;
+  el('liste').hidden = true;
+  el('fuss').hidden = true;
+  el('status').textContent = '';
+}
+
+async function lade() {
+  if (!speicher.token) return zeigeZugang();
+  zuletztGeladen = Date.now();
+  try {
+    const [state, commits] = await Promise.all([
+      holeApi('contents/state.json', 'application/vnd.github.raw+json'),
+      holeApi('commits?path=state.json&per_page=1', 'application/vnd.github+json'),
+    ]);
+    stellen = offeneStellen(state);
+    const geaendert = commits[0]?.commit?.committer?.date ?? null;
+    localStorage.setItem('kopie', JSON.stringify({ stellen, geaendert }));
+    zeichne();
+    statuszeile(geaendert);
+  } catch (fehler) {
+    if (fehler.zugang) {
+      speicher.token = null;
+      localStorage.removeItem('kopie');
+      stellen = [];
+      return zeigeZugang('GitHub hat den Schlüssel abgelehnt. Er ist vielleicht abgelaufen oder hat nicht die richtigen Rechte. Bitte neu eintragen.');
+    }
+    const kopie = JSON.parse(localStorage.getItem('kopie') ?? 'null');
+    if (kopie) {
+      stellen = kopie.stellen;
+      zeichne();
+      statuszeile(kopie.geaendert, ' · offline, letzter Stand');
+    } else {
+      el('status').textContent = `Laden fehlgeschlagen: ${fehler.message}`;
+    }
+  }
+}
+
+el('speichern').addEventListener('click', () => {
+  const wert = el('token').value.trim();
+  if (!wert) return;
+  speicher.token = wert;
+  el('token').value = '';
+  el('status').textContent = 'Lade …';
+  lade();
+});
+
+el('abmelden').addEventListener('click', () => {
+  speicher.token = null;
+  localStorage.removeItem('kopie');
+  stellen = [];
+  zeigeZugang();
+});
+
+for (const th of document.querySelectorAll('th[data-spalte]')) {
+  th.querySelector('button').addEventListener('click', () => {
+    const spalte = th.dataset.spalte;
+    sortierung = sortierung.spalte === spalte
+      ? { spalte, absteigend: !sortierung.absteigend }
+      : { spalte, absteigend: spalte === 'datum' };
+    localStorage.setItem('sortierung', JSON.stringify(sortierung));
+    zeichne();
+  });
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && Date.now() - zuletztGeladen > MINDESTABSTAND_MS) lade();
+});
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+lade();
