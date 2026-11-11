@@ -320,5 +320,15 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && Date.now() - zuletztGeladen > MINDESTABSTAND_MS) lade();
 });
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  // Übernimmt eine neue App-Version die Seite, einmal neu laden, damit sie sofort sichtbar ist.
+  const hatteVersion = Boolean(navigator.serviceWorker.controller);
+  let neuGeladen = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hatteVersion || neuGeladen) return;
+    neuGeladen = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
+}
 lade();
