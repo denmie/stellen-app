@@ -146,6 +146,9 @@ input {
   font-size: 16px;
 }
 
+#suche { width: auto; margin: 0 8px 10px; display: block; min-width: 0; width: calc(100% - 16px); }
+td.leer { color: var(--leise); text-align: center; padding: 24px 8px; }
+
 #speichern {
   width: 100%;
   min-height: 46px;

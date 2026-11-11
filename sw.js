@@ -1,5 +1,5 @@
 // Hält nur die App-Dateien offline bereit. Stellendaten und Schlüssel laufen nie hier durch.
-const CACHE = 'app-v2';
+const CACHE = 'app-v3';
 const DATEIEN = ['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

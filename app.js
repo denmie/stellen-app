@@ -15,6 +15,7 @@ let stellen = [];
 let sortierung = JSON.parse(localStorage.getItem('sortierung') ?? 'null') ?? { spalte: 'datum', absteigend: true };
 let zuletztGeladen = 0;
 let offenId = null;
+let suchtext = '';
 let letzterStand = [null, ''];
 // Bewerbungen bleiben nur auf diesem Gerät: { Stellennummer: Datum }.
 let beworben = {};
@@ -203,8 +204,22 @@ function zeilen(job, firmaKurz) {
 
 function zeichne() {
   const firmaKurz = kurzeFirmen(stellen);
-  const sortiert = [...stellen].sort(vergleiche);
-  document.querySelector('#liste tbody').replaceChildren(...sortiert.flatMap((job) => zeilen(job, firmaKurz)));
+  const gesucht = suchtext.toLocaleLowerCase('de');
+  const sortiert = stellen
+    .filter((job) => ohneKuerzel(job.titel).toLocaleLowerCase('de').includes(gesucht))
+    .sort(vergleiche);
+  const inhalt = sortiert.flatMap((job) => zeilen(job, firmaKurz));
+  if (inhalt.length === 0 && stellen.length > 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 3;
+    td.className = 'leer';
+    td.textContent = `Kein Titel enthält „${suchtext}“.`;
+    tr.append(td);
+    inhalt.push(tr);
+  }
+  document.querySelector('#liste tbody').replaceChildren(...inhalt);
+  el('suche').hidden = false;
   for (const th of document.querySelectorAll('th[data-spalte]')) {
     const aktiv = th.dataset.spalte === sortierung.spalte;
     th.querySelector('span').textContent = aktiv ? (sortierung.absteigend ? '▼' : '▲') : '';
@@ -232,6 +247,7 @@ function statuszeile(geaendert, zusatz = '') {
 function zeigeZugang(hinweis) {
   if (hinweis) el('zugang-hinweis').textContent = hinweis;
   el('zugang').hidden = false;
+  el('suche').hidden = true;
   el('liste').hidden = true;
   el('fuss').hidden = true;
   el('status').textContent = '';
@@ -275,6 +291,11 @@ el('speichern').addEventListener('click', () => {
   el('token').value = '';
   el('status').textContent = 'Lade …';
   lade();
+});
+
+el('suche').addEventListener('input', (e) => {
+  suchtext = e.target.value.trim();
+  zeichne();
 });
 
 el('abmelden').addEventListener('click', () => {
