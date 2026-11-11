@@ -14,6 +14,11 @@ const speicher = {
 let stellen = [];
 let sortierung = JSON.parse(localStorage.getItem('sortierung') ?? 'null') ?? { spalte: 'datum', absteigend: true };
 let zuletztGeladen = 0;
+let offenId = null;
+let letzterStand = [null, ''];
+// Bewerbungen bleiben nur auf diesem Gerät: { Stellennummer: Datum }.
+let beworben = {};
+try { beworben = JSON.parse(localStorage.getItem('beworben') ?? '{}') ?? {}; } catch { beworben = {}; }
 
 async function holeApi(pfad, accept) {
   const antwort = await fetch(`https://api.github.com/repos/${REPO}/${pfad}`, {
@@ -33,7 +38,7 @@ function offeneStellen(state) {
   const nachId = new Map();
   for (const suche of Object.values(state.suchen ?? {})) {
     for (const [id, job] of Object.entries(suche.gesehen ?? {})) {
-      if (job.passt && !job.weg) nachId.set(id, job);
+      if (job.passt && !job.weg) nachId.set(id, { ...job, id });
     }
   }
   return [...nachId.values()];
@@ -83,28 +88,61 @@ function vergleiche(a, b) {
   return (sortierung.absteigend ? -nachDatum : nachDatum) || nachTitel;
 }
 
-function zeile(job, firmaKurz) {
+const schluessel = (job) => job.id ?? job.url;
+const hatBeworben = (job) => Boolean(beworben[schluessel(job)]);
+
+/** Klappt das Aktionsfeld einer Stelle auf oder zu. Es ist immer höchstens eines offen. */
+function klappe(id) {
+  offenId = offenId === id ? null : id;
+  for (const tr of document.querySelectorAll('tr.stelle')) {
+    const auf = tr.dataset.id === offenId;
+    tr.classList.toggle('auf', auf);
+    tr.querySelector('.titel').setAttribute('aria-expanded', String(auf));
+    tr.nextElementSibling.classList.toggle('auf', auf);
+    tr.nextElementSibling.inert = !auf;
+  }
+}
+
+function markiere(job) {
+  const id = schluessel(job);
+  if (beworben[id]) delete beworben[id];
+  else beworben[id] = new Date().toISOString().slice(0, 10);
+  localStorage.setItem('beworben', JSON.stringify(beworben));
+  zeichne();
+  statuszeile(...letzterStand);
+}
+
+function zeilen(job, firmaKurz) {
+  const id = schluessel(job);
+  const istBeworben = hatBeworben(job);
+  const neu = !istBeworben && istNeu(job);
+  const auf = id === offenId;
+
   const tr = document.createElement('tr');
-  const neu = istNeu(job);
-  if (neu) tr.className = 'neu';
+  tr.className = ['stelle', istBeworben ? 'beworben' : neu ? 'neu' : '', auf ? 'auf' : ''].filter(Boolean).join(' ');
+  tr.dataset.id = id;
+  tr.addEventListener('click', () => klappe(id));
 
   const titel = document.createElement('td');
-  if (neu) {
+  if (istBeworben || neu) {
     const marke = document.createElement('span');
     marke.className = 'marke';
-    marke.textContent = 'NEU';
+    marke.textContent = istBeworben ? 'BEWORBEN' : 'NEU';
     titel.append(marke);
   }
-  // Nur echte Webadressen verlinken, die Daten kommen von außen.
-  const istWeb = /^https:\/\//.test(job.url ?? '');
-  const link = document.createElement(istWeb ? 'a' : 'span');
-  link.textContent = ohneKuerzel(job.titel);
-  if (istWeb) {
-    link.href = deutscherLink(job.url);
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-  }
-  titel.append(link);
+  // Kein <button>: Der Titel soll wie Fließtext hinter der Marke umbrechen.
+  const name = document.createElement('span');
+  name.className = 'titel';
+  name.textContent = ohneKuerzel(job.titel);
+  name.setAttribute('role', 'button');
+  name.tabIndex = 0;
+  name.setAttribute('aria-expanded', String(auf));
+  name.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    klappe(id);
+  });
+  titel.append(name);
   if (job.ort) {
     const ort = document.createElement('small');
     ort.textContent = job.ort;
@@ -120,13 +158,53 @@ function zeile(job, firmaKurz) {
   datum.textContent = datumKurz(job.ausgeschrieben);
 
   tr.append(titel, firma, datum);
-  return tr;
+
+  const aktionen = document.createElement('tr');
+  aktionen.className = auf ? 'aktionen auf' : 'aktionen';
+  aktionen.inert = !auf;
+  const zelle = document.createElement('td');
+  zelle.colSpan = 3;
+  const fach = document.createElement('div');
+  fach.className = 'fach';
+  const inhalt = document.createElement('div');
+  inhalt.className = 'inhalt';
+  const leiste = document.createElement('div');
+  leiste.className = 'leiste';
+
+  // Nur echte Webadressen verlinken, die Daten kommen von außen.
+  if (/^https:\/\//.test(job.url ?? '')) {
+    const oeffnen = document.createElement('a');
+    oeffnen.className = 'knopf haupt';
+    oeffnen.textContent = 'Öffnen';
+    oeffnen.href = deutscherLink(job.url);
+    oeffnen.target = '_blank';
+    oeffnen.rel = 'noopener noreferrer';
+    leiste.append(oeffnen);
+  }
+  const merken = document.createElement('button');
+  merken.type = 'button';
+  merken.className = 'knopf';
+  merken.textContent = istBeworben ? 'Markierung entfernen' : 'Als beworben markieren';
+  merken.addEventListener('click', () => markiere(job));
+  leiste.append(merken);
+  inhalt.append(leiste);
+  if (istBeworben) {
+    const notiz = document.createElement('p');
+    notiz.className = 'notiz';
+    notiz.textContent = `Beworben am ${datumKurz(beworben[id])}`;
+    inhalt.append(notiz);
+  }
+  fach.append(inhalt);
+  zelle.append(fach);
+  aktionen.append(zelle);
+
+  return [tr, aktionen];
 }
 
 function zeichne() {
   const firmaKurz = kurzeFirmen(stellen);
   const sortiert = [...stellen].sort(vergleiche);
-  document.querySelector('#liste tbody').replaceChildren(...sortiert.map((job) => zeile(job, firmaKurz)));
+  document.querySelector('#liste tbody').replaceChildren(...sortiert.flatMap((job) => zeilen(job, firmaKurz)));
   for (const th of document.querySelectorAll('th[data-spalte]')) {
     const aktiv = th.dataset.spalte === sortierung.spalte;
     th.querySelector('span').textContent = aktiv ? (sortierung.absteigend ? '▼' : '▲') : '';
@@ -142,8 +220,11 @@ const zeitpunkt = (iso) =>
   new Date(iso).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
 function statuszeile(geaendert, zusatz = '') {
-  const neu = stellen.filter(istNeu).length;
+  letzterStand = [geaendert, zusatz];
+  const anzahlBeworben = stellen.filter(hatBeworben).length;
+  const neu = stellen.filter((job) => !hatBeworben(job) && istNeu(job)).length;
   const teile = [`${stellen.length} offen`, `${neu} neu`];
+  if (anzahlBeworben) teile.push(`${anzahlBeworben} beworben`);
   if (geaendert) teile.push(`Liste geändert ${zeitpunkt(geaendert)}`);
   el('status').textContent = teile.join(' · ') + zusatz;
 }
